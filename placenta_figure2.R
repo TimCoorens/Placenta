@@ -5,6 +5,7 @@ library(ggplot2)
 manifest=read.csv("Extended_data_table2.csv") #Read in Extended data table 2
 
 #Figure 2b
+#to3
 
 lcm_samples = manifest[manifest$Histo_desc != 'Bulk' & manifest$Patient != 'PD42146',]
 lcm_samples$Histo_desc = factor(lcm_samples$Histo_desc, levels = c('Trophoblast', 'Mesenchymal core'))
@@ -120,6 +121,7 @@ mean(MC_dist_vec)
 mean(TB_dist_vec)
 
 #Figure 2e
+#tc16
 plot(0,type = "n", xaxt = "n", yaxt = "n", xlab = "", bty="n",
      ylab = "",xlim=c(-1,9),ylim=c(-0.2,1.2))
 a=1
