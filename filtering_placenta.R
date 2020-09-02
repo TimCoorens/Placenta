@@ -4,10 +4,8 @@ opt=commandArgs(T)[2] #either 'snp' or 'indel'
 
 library(data.table)
 
-source("/lustre/scratch117/casm/team274/tc16/Scripts/R_scripts/binom_mix_model.R")
 source("/lustre/scratch117/casm/team274/tc16/Scripts/R_scripts/germline_exact_binom.R")
 source("/lustre/scratch117/casm/team274/tc16/Scripts/R_scripts/beta_binom_flt.R")
-source("/lustre/scratch117/casm/team274/tc16/Scripts/R_scripts/plot_spectrum.R")
 
 samples_with_CNVs=read.table("samples_with_CNVs.txt")[,1]
 data = fread(paste0(patient,"/",patient,".",opt,".tsv"),header=T,data.table=F)
