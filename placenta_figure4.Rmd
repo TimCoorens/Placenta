@@ -1,0 +1,561 @@
+---
+title: "Figure 4"
+output: html_document
+---
+
+##Figure 4a. Comparison of the coding substitutions per Mb per year between trophoblast microdissections and a range of pediatric malignancies.
+
+When Groebner et al. refer to coding mutations it seems to mean both synonymous and non-synonymous mutations within the exonic region. They normalise their variant calls across different sequencing platforms to adjust for the total callable length of the exome.
+
+To make the comparison fair, we use mosdepth to establish the callable region (>=4x coverage minimum) of the exome per placental sample. We then calculate the burden using only exonic substitutions. We limit it to the autosomal exonic regions to make the comparisons fair within the placenta samples and, as the rate is expressed per Mb, it should not affect comparisons with the cancers.
+
+###Mosdepth
+
+Estimate callable base coverage of the genome to adjust mutation burden estimates as needed.
+
+```{bash}
+while read line;
+do
+set $line
+/nfs/users/nfs_t/to3/scripts/run_mosdepth.sh $1 /nfs/cancer_ref01/nst_links/live/2058/"$1"/"$1".sample.dupmarked.bam "0:1:4:100:" /lustre/scratch119/casm/team274sb/to3/placenta/mosdepth/20200429/ 
+done < placenta_samples.txt #list of trophoblast samples
+
+```
+
+Remove regions usually excluded by CaVEMan. Subset genome to only include the autosomal exonic regions.
+```{bash}
+
+cd /lustre/scratch119/casm/team274sb/to3/placenta/mosdepth/20200429
+module load bedtools
+
+ls *.quantized.quantized.bed.gz | while read FILE ; do zgrep -P "\tCALLABLE\|HIGH_COVERAGE$" "$FILE" | bedtools intersect -a - -b /lustre/scratch119/casm/team294rr/rs30/References/GRCh37d5/chrom.sizes.bed -u | bedtools subtract -a - -b /lustre/scratch119/casm/team78pipelines/canpipe/live/ref/human/GRCh37d5/caveman/flagging/simple_repeats.bed | bedtools subtract -a - -b /lustre/scratch119/casm/team78pipelines/canpipe/live/ref/human/GRCh37d5/caveman/flagging/hi_seq_depth.bed | bedtools subtract -a - -b /lustre/scratch119/casm/team78pipelines/canpipe/live/ref/human/GRCh37d5/caveman/flagging/centromeric_repeats.bed > ${FILE%.bed.gz}.callable.calledContigs.subtracted_ignored_regions.bed ; done
+
+#subset to only contain autosomal regions
+for f in $(ls *.bed);
+do
+filename=$(basename -- "$f")
+filename="${filename%.quantized.quantized.callable.calledContigs.subtracted_ignored_regions.bed}"
+echo $filename
+awk -F "\t" '{ if(($1 != "X") && ($1 != "Y")) { print } }' ${filename}.quantized.quantized.callable.calledContigs.subtracted_ignored_regions.bed > ${filename}.quantized.quantized.callable.calledContigs.subtracted_ignored_regions.autosomalchr_only.bed
+done
+
+#subset to only contain exonic regions
+for f in $(ls PD*lo*.quantized.quantized.callable.calledContigs.subtracted_ignored_regions.autosomalchr_only.bed);
+do
+filename=$(basename -- "$f")
+filename="${filename%.quantized.quantized.callable.calledContigs.subtracted_ignored_regions.autosomalchr_only.bed}"
+bedtools intersect -a $f -b /nfs/users/nfs_t/to3/genomic_regions/Homo_sapiens.GRCh37.75_autosomal_exon_merged_sorted.bed > ${filename}.quantized.quantized.callable.calledContigs.subtracted_ignored_regions.autosomalchr_exon_only.bed
+done
+
+#estimate length of the exonic autosomal region called
+ls PD*lo*.quantized.quantized.callable.calledContigs.subtracted_ignored_regions.autosomalchr_exon_only.bed | while read FILE ; do perl /nfs/users/nfs_r/rs30/repositories/Baylor/scripts/BED_stats/get_BED-stats.v2.pl "$FILE" ; done
+
+#fetch total length of exonic regions for our genome build
+cd /nfs/users/nfs_t/to3/genomic_regions
+perl /nfs/users/nfs_r/rs30/repositories/Baylor/scripts/BED_stats/get_BED-stats.v2.pl Homo_sapiens.GRCh37.75_autosomal_exon_merged_sorted.bed
+#88593211 bases
+
+```
+
+
+Generate a list of coding mutations per sample and write it to the manifest.
+```{r}
+
+setwd('/lustre/scratch119/casm/team274sb/to3/placenta/file_repo/unmatched/final_variant_files')
+
+manifest <- read.table('/lustre/scratch119/casm/team274sb/to3/placenta/final_files/Placenta_final_manifest.txt', sep = '\t', header = T, stringsAsFactors = F)
+sample.list <- manifest[manifest$Histo_desc == 'Trophoblast' & manifest$Patient != 'PD42146',]$Sample
+
+#read in trophoblast data without sex chromosome mutations to make the comparison fair.
+tropho_muts <- c()
+for(i in sample.list){
+  mut_file <- paste0(i, '_final_snvs_germline_indels_removed.txt')
+  mut_calls <- read.table(mut_file, sep='\t', header = T, stringsAsFactors = F)
+  auto_calls <- mut_calls[mut_calls$Chr %in% c(1:22),] #keep to autosomal genome for the simplicity of comparison and further subsequent comparisons 
+  auto_calls <- auto_calls[,c(1,2,4,5,6)]
+  names(auto_calls) <- c('Chr', 'Pos', 'Ref', 'Alt', 'Func.refGene')
+  auto_calls$sample = i
+  tropho_muts <- rbind(tropho_muts, auto_calls)
+}
+
+tropho_muts$patient <- substr(tropho_muts$sample, 0, 7)
+
+exonic_mt_count <- data.frame(sample = unique(tropho_muts$sample))
+exonic_mt_count$coding_mts <- NA
+
+for(i in 1:nrow(exonic_mt_count)){
+  exonic_mt_count$coding_mts[i] = sum(tropho_muts[tropho_muts$sample == paste0(exonic_mt_count$sample[i]),]$Func.refGene == 'exonic')
+}
+
+names(exonic_mt_count) <- c('sample', 'exonic_burden')
+
+#read in callable exonic regions per sample
+
+setwd('/lustre/scratch119/casm/team274sb/to3/placenta/mosdepth/20200429')
+
+exonic_mt_count$callable_exon_length <- NA
+for(i in exonic_mt_count$sample){
+  bedstats <- read.table(paste0(i, '.quantized.quantized.callable.calledContigs.subtracted_ignored_regions.autosomalchr_exon_only.bedStats'), sep = ':', header = F, stringsAsFactors = F)
+  exonic_mt_count[exonic_mt_count$sample == i,]$callable_exon_length = as.numeric(strsplit(bedstats[5,2], ' ')[[1]][2])
+}
+
+exonic_mt_count$exonic_burden_adjusted_for_callable = exonic_mt_count$exonic_burden / (exonic_mt_count$callable_exon_length / 88593211)
+exonic_mt_count$exonic_burden_per_MB = exonic_mt_count$exonic_burden_adjusted_for_callable / (88593211 / 1000000)
+exonic_mt_count$exonic_burden_per_MB_per_year = exonic_mt_count$exonic_burden_per_MB / 0.75 #9 month gestation adjustment
+
+manifest$SNVs_coding_region = NA
+manifest$callable_exon_length = NA
+manifest$genome_build_exon_length = 88593211
+
+for ( i in 1:nrow(manifest) ){
+  if ( manifest$Sample[i] %in% exonic_mt_count$sample ){
+    manifest$SNVs_coding_region[i] = exonic_mt_count[exonic_mt_count$sample == manifest$Sample[i],]$exonic_burden
+    manifest$callable_exon_length[i] = exonic_mt_count[exonic_mt_count$sample == manifest$Sample[i],]$callable_exon_length
+  }
+}
+
+write.table(manifest, '/lustre/scratch119/casm/team274sb/to3/placenta/final_files/Placenta_final_manifest.txt', sep = '\t', row.names = F, quote = F)
+
+```
+
+###Plot
+```{r}
+
+pan_pedcan <- read.table('/lustre/scratch119/casm/team274sb/to3/placenta/reference_datasets/Pfister_nature_paeds_cancer_data.txt', header = T, sep = '\t', stringsAsFactors = F)
+nrow(pan_pedcan) #961 samples
+sum(pan_pedcan$Sample != pan_pedcan$Sample.1) #correctly ordered
+
+
+dim(pan_pedcan[!(is.na(pan_pedcan$Age)),]) #920 patients have an age
+pan_pedcan_primary <- pan_pedcan[pan_pedcan$Type == 'Primary',] #879 are primary tumours which will be compared to placenta mutation rate
+pan_pedcan_with_age <- pan_pedcan_primary[!(is.na(pan_pedcan_primary$Age)),] #838 primary tumours have age data
+
+pan_pedcan_with_age$SNVs.Per.Mb.Per.Year <- pan_pedcan_with_age$SNVs.Per.Mb / (pan_pedcan_with_age$Age + 0.75) #adjust for gestation
+
+exonic_mt_count$tissue_type <- 'TB'
+exonic_mt_count$patient = substr(exonic_mt_count$sample, 0, 7)
+df <- exonic_mt_count[, c('sample', 'exonic_burden', 'exonic_burden_per_MB_per_year', 'tissue_type')]
+pfister_append <- pan_pedcan_with_age[, c('Sample', 'SNVs', 'SNVs.Per.Mb.Per.Year', 'Cancer.Type')]
+
+
+names(pfister_append) = names(df)
+final_mb <- rbind(df, pfister_append)
+final_mb$tissue_type <- as.factor(final_mb$tissue_type)
+final_mb_plotting <- final_mb
+final_mb_plotting[order(final_mb_plotting$exonic_burden_per_MB_per_year),]$exonic_burden_per_MB_per_year
+
+#scale data so I can add 1 to allow log conversion
+final_mb_plotting$exonic_burden_per_MB_per_year_x10000 = final_mb_plotting$exonic_burden_per_MB_per_year * 10000
+final_mb_plotting[final_mb_plotting$exonic_burden_per_MB_per_year_x10000 == 0,]$exonic_burden_per_MB_per_year_x10000 = 1
+min(log(final_mb_plotting$exonic_burden_per_MB_per_year_x10000)) #replacing 0 values has worked
+
+#get the median exonic substitution burden per year for each tumour/tissue and order them according to it
+median_mts_year <- aggregate(exonic_burden_per_MB_per_year ~ tissue_type, data = final_mb, median)
+ordered_median <- median_mts_year[order(median_mts_year$exonic_burden_per_MB_per_year),]
+ordered_median$col_no <- c(1:nrow(ordered_median))
+
+final_mb_plotting$tissue_type <- factor(final_mb_plotting$tissue_type, levels = c(as.vector(ordered_median$tissue_type)))
+head(final_mb_plotting)
+final_mb_plotting <- with(final_mb_plotting, final_mb_plotting[order(tissue_type, exonic_burden_per_MB_per_year),])
+final_mb_plotting$sample <- factor(final_mb_plotting$sample, levels = c(as.vector(final_mb_plotting$sample))) #set sample order by tissue then substitution rate
+
+library(ggplot2)
+library(reshape2)
+library(dplyr)
+library(RColorBrewer)
+library(ggsci)
+library(ggpubr)
+
+a <- ifelse(final_mb_plotting$tissue_type == 'TB', 'TB', 'paed_tumour')
+
+levels(final_mb_plotting$tissue_type) = c(expression(bold('PA')), expression(bold('AML')), expression(bold(paste('B-ALL'[Hypo]))), expression(bold(paste('EPD'[ST]))), expression(bold('EWS')), expression(bold(paste('MB'[Group4]))), expression(bold(paste('B-ALL'[Other]))), expression(bold(paste('EPD'[IT]))), expression(bold('HB')), expression(bold(paste('MB'[SHH]))), expression(bold('WT')), expression(bold(paste('MB'[WNT]))), expression(bold(paste('T-ALL'))), expression(bold('RB')), expression(bold('OS')), expression(bold(paste('MB'[Group3]))), expression(bold(paste('HGG'[other]))), expression(bold('ACC')), expression(bold('RMS')), expression(bold(paste('HGG'[K27M]))), expression(bold('Trophoblast')), expression(bold('BL')), expression(bold('ATRT')), expression(bold('NB')), expression(bold('ETMR')))
+
+final_mb_plotting <- final_mb_plotting %>% group_by(tissue_type) %>%
+  mutate(med = log(median(exonic_burden_per_MB_per_year_x10000)))
+final_mb_plotting <- data.frame(final_mb_plotting)
+
+p <- ggplot(final_mb_plotting, aes(x = sample, y = log(exonic_burden_per_MB_per_year_x10000))) +
+  facet_grid(. ~ tissue_type, scales = 'free', switch = 'x', labeller = label_parsed) + 
+  geom_point(size = 0.7, aes(col = a)) + 
+  coord_cartesian(clip = 'off', ylim = c(log(1), log(1000000)), expand = T) +
+  theme_classic() +
+  theme(panel.spacing = unit(2, "mm"), panel.background = element_rect(colour=NA, fill=NA),
+        strip.background = element_rect(colour=NA, fill=NA), strip.placement = "outside",         
+        axis.text.x = element_blank(),
+        axis.ticks.x=element_blank(), panel.grid = element_blank(), panel.border = element_blank(), axis.line = element_line(colour = 'black'), strip.text.x = element_text(angle = 60, size = 10, vjust = 1.1, hjust = 1), legend.position = "none", axis.title.y = element_text(margin = margin(t = 0, r = 10, b = 0, l = 0)), axis.text.y = element_text(size = 9)) +
+  scale_color_manual(values=c("#656565", "#E6007EFF")) + geom_hline(aes(yintercept = med, group = tissue_type), colour = 'black') +
+  labs(x = "", y = 'Coding substitutions per Mb per year') + scale_x_discrete(expand = c(0.1, 2)) + scale_y_continuous(breaks = c(log(1), log(100), log(1000), log(10000), log(100000), log(1000000)), labels = c(0, 0.01, 0.1, 1, 10, 100), expand = expansion(mult = c(0.01, 0))) 
+
+pg <- ggplotGrob(p)
+
+for(i in which(grepl("strip-b", pg$layout$name))){
+  pg$grobs[[i]]$layout$clip <- "off"
+}
+
+pdf('/lustre/scratch119/casm/team274sb/to3/placenta/final_files/placenta_v_pfister_paeds_pancan_20200701.pdf', height = 5, width = 7, useDingbats = F)
+grid::grid.draw(pg)
+dev.off()
+
+```
+
+##Figure 5c. Bar chart showing the median proportion of substitutions attributable to signature 18 in trophoblasts and pediatric cancers.
+
+These studies report proportions of SBS18 from whole genome sequencing data.
+
+```{r}
+
+library(ggpubr)
+library(cowplot)
+library('gridExtra')
+library(plyr)
+
+manifest <- read.table('/lustre/scratch119/casm/team274sb/to3/placenta/final_files/Placenta_final_manifest.txt', sep = '\t', header = T, stringsAsFactors = F)
+
+#our LCM samples
+tropho_sigs <- manifest[manifest$Histo_desc == 'Trophoblast', c('Sample', 'Patient', 'SNVs_MB', 'prop_SBS18')]
+row.names(tropho_sigs) = tropho_sigs$Sample
+tropho_sigs_norm <- tropho_sigs[tropho_sigs$Patient != 'PD42146',]
+tropho_sigs_norm$Patient <- as.factor(tropho_sigs_norm$Patient)
+tropho_sigs_norm <- tropho_sigs_norm[order(tropho_sigs_norm$Patient),]
+tropho_sigs_norm$prop_all_but_sig18 = 1 - tropho_sigs_norm$prop_SBS18
+tropho_sigs_norm$tissue_type <- 'TB'
+
+#read in and prepare pan-paed cancer data
+pan_pedcan <- read.table('/lustre/scratch119/casm/team274sb/to3/placenta/reference_datasets/pfister_paeds_pancan_sig_mt_append20200601.txt', header = T, sep = '\t', stringsAsFactors = F)
+pan_pedcan_wgs <- pan_pedcan[pan_pedcan$Sequencing.Type == 'WGS',] #547 WGS samples
+#pan_pedcan_wgs <- pan_pedcan_wgs[!is.na(pan_pedcan_wgs$Age),] #507 samples have ages, no longer relevant as we now don't express mutations per year attributed to SBS18
+pan_pedcan_wgs_sigs <- pan_pedcan_wgs[!is.na(pan_pedcan_wgs$totalSigs_MB) & !is.na(pan_pedcan_wgs$SBS18.mt),] #remove NA sig samples, 464 samples. Note that this does not remove samples with an adequate number of mutations to call signatures that have established the absence of SBS18.
+pan_pedcan_wgs_sigs$prop_SBS18 = pan_pedcan_wgs_sigs$SBS18.mt / pan_pedcan_wgs_sigs$totalSigs_MB
+pan_pedcan_wgs_sigs$prop_all_but_sig18 = 1 - pan_pedcan_wgs_sigs$prop_SBS18
+
+#combine together
+lcm_final <- tropho_sigs_norm[, c('Sample', 'tissue_type', 'prop_SBS18', 'prop_all_but_sig18')]
+pan_pedcan_append <- pan_pedcan_wgs_sigs[, c('Sample', 'Cancer.Type', 'prop_SBS18', 'prop_all_but_sig18')]
+names(pan_pedcan_append) = names(lcm_final)
+
+final_sig = rbind(lcm_final, pan_pedcan_append)
+final_sig$tissue_type <- as.factor(final_sig$tissue_type)
+final_sig_plotting <- final_sig
+final_sig_plotting = data.frame(final_sig_plotting)
+
+final_sig_plotting[order(final_sig_plotting$prop_SBS18),]$prop_SBS18
+final_sig_plotting[order(final_sig_plotting$prop_all_but_sig18),]$prop_all_but_sig18
+
+table(final_sig_plotting$tissue_type)
+
+#generate median proportions of the contribution of SBS18 to each tumour type
+median_sbs18 = aggregate(prop_SBS18 ~ tissue_type, data = final_sig_plotting, median)
+median_sbs18 = median_sbs18[order(median_sbs18$prop_SBS18),]
+
+final_sig_plotting$tissue_type = factor(final_sig_plotting$tissue_type, levels = c(as.vector(median_sbs18$tissue_type)))
+
+levels(final_sig_plotting$tissue_type) = c("ATRT", "B-ALL Hypo", "B-ALL Other", "EPD IT", "EPD ST", "HGG Other", "MB Group 4", "MB SHH", "PA", "RB", "MB WNT", "HGG K27M", "BL", "MB Group 3", "ETMR", "OS", "AML", "ACC", "NB", "RMS", "Trophoblast\n clusters")
+
+pdf('/lustre/scratch119/casm/team274sb/to3/placenta/final_files/stacked_18_v_others_sigs_20200727.pdf', height = 5, width = 5)
+ggplot(final_sig_plotting) +
+  geom_bar(aes(x = tissue_type, y = prop_SBS18), position = "dodge", stat = "summary", fun = 'median', width = 1, colour = 'black', fill = "#009FE3FF") +
+  #geom_errorbar(mapping = aes(x = tissue_type, y = prop_SBS18),
+  #              stat = 'summary', fun.min = function(z) {quantile(z,0.25)},
+  #                fun.max = function(z) {quantile(z,0.75)},
+  #                fun = median, size = 0.5, width = 0.5) +
+  #scale_x_discrete(labels = parse(text = as.character(levels(final_sig_plotting$tissue_type)))) +
+  geom_vline(xintercept = c(1.5:length(unique(final_sig_plotting$tissue_type)))) +
+  theme_classic() +
+  theme(panel.spacing = unit(2, "mm"), 
+        panel.background = element_rect(colour= 'black', fill=NA),
+        strip.background = element_blank(),
+        #strip.text.x = element_blank(),
+        #strip.placement = "outside",         
+        axis.text.x = element_text(angle = 60, size = 10, vjust = 1, hjust = 1, colour = 'black'),
+        axis.ticks.x=element_blank(), 
+        panel.grid = element_blank(), 
+        panel.border = element_blank(), 
+        axis.line = element_line(colour = 'black'), 
+        legend.position = "none", 
+        axis.title.y = element_text(margin = margin(t = 0, r = 10, b = 0, l = 0), size = 11), 
+        axis.text.y = element_text(size = 11),
+        axis.title.x = element_blank(),
+        legend.text = element_text(size =11)) +
+  theme(plot.margin=unit(c(0.5, 0.5, 0.5, 0.1),"cm")) +
+  coord_cartesian(ylim = c(0, 0.5), expand = F) +
+  labs(y = 'Median relative burden of substitutions\n attributed to SBS18 per genome')
+dev.off()
+
+
+```
+
+##Figure 5D. Phased BAF plot for samples with paternal UPD of chromosome 11p
+
+Run allelecounter for each of the patient's samples, their matched sample and the maternal sample.
+
+First, create a txt file containing a list of the locations of the BAM files. Run allelecounter on cgpfarm for chromosome 11 SNPs detailed in the 1000 genomes project.
+
+```{bash}
+
+cd /lustre/scratch119/casm/team274sb/to3/placenta/baf_plotting/
+
+#1st set: PD45557e_lo0003 PD45557f PD45617b
+
+#PD45557e_lo0003 - trophoblast cluster
+#PD45557f - umbilical cord
+#PD45617b - maternal sample
+
+#2nd set: PD42154b3 PD42153b PD42151b
+
+#PD42154b3 - placental biopsy
+#PD42153b - umbilical cord
+#PD42151b - maternal samples
+
+
+for f in PD45557e_lo0003 PD45557f PD45617b PD42154b3 PD42153b PD42151b;
+do
+echo "/nfs/cancer_ref01/nst_links/live/2058/${f}/${f}.sample.dupmarked.bam"
+done >> chr11_samples.txt
+
+while read i;
+do
+sampleID=$(basename $i | sed "s/[.].*//")
+echo $sampleID
+bsub -J"${sampleID}" -o ${sampleID}.o -e ${sampleID}.e -q normal -n 5 -R"select[mem>10000] rusage[mem=10000] span[hosts=1]" -M10000 "/software/CGP/canpipe/live/bin/canpipe_live alleleCounter -l 1000genomes.loci.2012/1000genomesloci2012_chr11.txt -b $i -o /lustre/scratch119/casm/team274sb/to3/placenta/baf_plotting/alleleCounter_files/$sampleID.txt"
+done < chr11_samples.txt 
+
+```
+
+Process to phase with only maternal sample:
+1) Identify homozygous SNPs in mother.
+2) Identify those sites that become heterozygous in the child's matched normal.
+3) Phase each of a heterozygous pair to each parent.
+4) Plot
+
+```{r}
+library(dplyr)
+setwd('/lustre/scratch119/casm/team274sb/to3/placenta/baf_plotting/alleleCounter_files')
+
+#read in mother's SNP calls
+mother <- read.table('PD45617b.txt', comment.char = '', header = T, stringsAsFactors = F)
+
+#subset to only include 11p
+mother = mother[mother$POS < 53400000, ]
+
+#Filter mother's SNPs to leave probable homozygous SNPs
+mother_good_depth = mother[mother$Good_depth >= 10,] #minimum depth to call state of SNP
+mother_2state = mother_good_depth[rowSums(mother_good_depth[, c(3:6)] > 0) <= 2, ] #removes some with aberrant 3rd alleles
+mother_homo = mother_2state[mother_2state$Count_A/mother_2state$Good_depth > 0.9 | mother_2state$Count_C/mother_2state$Good_depth > 0.9 | mother_2state$Count_G/mother_2state$Good_depth > 0.9 | mother_2state$Count_T/mother_2state$Good_depth > 0.9, ] #filtered to leave probable homozygous SNPs only
+
+#read in child's umbilical cord SNPs
+child <- read.table('PD45557f.txt', comment.char = '', header = T, stringsAsFactors = F)
+child = child[child$POS < 53400000, ]
+
+#Identify SNPs that were homozygous in mother than are now likely to be heterozygous
+child_m_homo = merge(child, mother_homo[, c(1:2)]) #671932 SNPs
+child_good_depth = child_m_homo[child_m_homo$Good_depth >= 10,] #minimum depth to call state of SNP
+child_2state = child_good_depth[rowSums(child_good_depth[, c(3:6)] > 0) == 2, ] #removes definite homozygous SNPs and some with aberrant 3rd alleles
+child_hetero = child_2state[child_2state$Count_A/child_2state$Good_depth < 0.8 & child_2state$Count_C/child_2state$Good_depth < 0.8 & child_2state$Count_G/child_2state$Good_depth < 0.8 & child_2state$Count_T/child_2state$Good_depth < 0.8, ] #further filtered list of probably heterozygous SNPs, leaving 51234 potentially informative SNPs
+
+#make list of the homozygous SNPs in the mother that become heterozygous in the child
+mother_final = merge(mother_homo, child_hetero[, c(1:2)])
+sum(child_hetero$POS != mother_final$POS) #match order perfectly
+
+#annotate which allele belongs to mother and, by exclusion, father in the child
+child_hetero$mother_allele = NA
+child_hetero$father_allele = NA
+for(i in 1:nrow(child_hetero)){
+  child_hetero$mother_allele[i] = substr(colnames(sort(mother_final[mother_final$POS == child_hetero$POS[i], c(3:6)])[4]), 7, 7)
+  child_hetero$father_allele[i] = substr(colnames(sort(child_hetero[i, c(3:6)])[3:4])[!grepl(paste0("Count_", child_hetero$mother_allele[i]), colnames(sort(child_hetero[i, c(3:6)])[3:4]))], 7, 7)
+}
+
+child_hetero[rowSums(is.na(child_hetero[, c(3:6)])) > 0,] #no NAs left
+
+#read in trophoblast cluster sample with CN neutral LOH identified on ASCAT
+placenta <- read.table('PD45557e_lo0003.txt', comment.char = '', header = T, stringsAsFactors = F)
+placenta = placenta[placenta$POS < 53400000, ]
+placenta_hetero = merge(placenta, child_hetero[, c(1,2)]) #23152
+sum(child_hetero$POS != placenta_hetero$POS) #perfect alignment of order
+
+#knowing which allele belongs to which parent at the heterozygous sites, the counts of each can now be assigned within the sample of interest
+placenta_hetero$maternal_count = NA
+placenta_hetero$paternal_count = NA
+for(i in 1:nrow(placenta_hetero)){
+  placenta_hetero$maternal_count[i] = placenta_hetero[i, paste0('Count_', child_hetero$mother_allele[i])]
+  placenta_hetero$paternal_count[i] = placenta_hetero[i, paste0('Count_', child_hetero$father_allele[i])]
+}
+
+placenta_hetero$maternal_VAF = placenta_hetero$maternal_count / placenta_hetero$Good_depth
+placenta_hetero$paternal_VAF = placenta_hetero$paternal_count / placenta_hetero$Good_depth
+
+placenta_hetero.m = reshape2::melt(placenta_hetero[, c('X.CHR', 'POS', 'maternal_VAF', 'paternal_VAF')], id.vars = c('X.CHR', 'POS'))
+placenta_hetero.m$variable = as.factor(placenta_hetero.m$variable)
+
+pdf('/lustre/scratch119/casm/team274sb/to3/placenta/final_files/PD45557e_lo0003_chr11p_BAF_mk1_20200719.pdf', width = 3, height = 1.5, useDingbats = F)
+ggplot(placenta_hetero.m) +
+  geom_point(aes(x = POS, y = value, colour = variable), size = 0.03, pch = '.', alpha = 0.5) +
+  theme_bw() +
+    geom_hline(yintercept = 1.02, size = 1) +
+    theme(axis.title.y.right = element_blank(),                
+          axis.text.y.right = element_blank(),                 
+          axis.ticks.y.right = element_blank(),                      
+          strip.background = element_blank(),         
+          panel.grid = element_blank(), axis.line = element_line(colour = 'black'), axis.text = element_text(size = 8), axis.title.x = element_text(size=9, margin = margin(t = 10)), axis.title.y = element_text(size = 10), legend.position = "none") +
+    coord_cartesian(ylim = c(-0.02, 1.02), xlim = c(0, 53400000), expand = F) +
+    labs(y = 'BAF', x = '') +
+    scale_x_continuous(name = 'Position on short arm of chromosome 11 position (Mb)', breaks = c(20000000, 40000000), labels = c(20, 40)) + 
+  scale_y_continuous(breaks = c(0, 0.5, 1), labels = c(0, 0.5, 1)) +
+  scale_color_manual(values = c('black', 'grey'))
+dev.off()
+
+png('/lustre/scratch119/casm/team274sb/to3/placenta/final_files/PD45557e_lo0003_chr11p_BAF_mk1_20200722_datapointsonly.png', width = 4, height = 2, res = 720, units = 'in')
+ggplot(placenta_hetero.m) +
+  geom_point(aes(x = POS, y = value, colour = variable), size = 0.03, pch = '.', alpha = 0.5) +
+  theme_bw() +
+    #geom_hline(yintercept = 1.02, size = 1) +
+    theme(axis.line.x = element_blank(),
+          axis.line.y = element_blank(),
+          panel.border = element_blank(),
+      axis.title.y.right = element_blank(),                
+          axis.text.y.right = element_blank(),                 
+          axis.ticks = element_blank(),                      
+          strip.background = element_blank(),         
+          panel.grid = element_blank(), axis.text = element_blank(), axis.title = element_blank(), legend.position = "none") +
+    coord_cartesian(ylim = c(-0.02, 1.02), xlim = c(0, 53400000), expand = F) +
+    labs(y = 'BAF', x = '') +
+    scale_x_continuous(name = 'Position on short arm of chromosome 11 position (Mb)', breaks = c(20000000, 40000000), labels = c(20, 40)) + 
+  scale_y_continuous(breaks = c(0, 0.5, 1), labels = c(0, 0.5, 1)) +
+  scale_color_manual(values = c('black', 'grey'))
+dev.off()
+
+pdf('/lustre/scratch119/casm/team274sb/to3/placenta/final_files/PD45557e_lo0003_chr11p_BAF_mk1_20200722_axesonly.pdf', width = 3, height = 1.5, useDingbats = F)
+ggplot(placenta_hetero.m) +
+  geom_blank(aes(x = POS, y = value, colour = variable)) +
+  theme_bw() +
+    geom_hline(yintercept = 1.02, size = 1) +
+    theme(axis.title.y.right = element_blank(),                
+          axis.text.y.right = element_blank(),                 
+          axis.ticks.y.right = element_blank(),                      
+          strip.background = element_blank(),         
+          panel.grid = element_blank(), axis.line = element_line(colour = 'black'), axis.text = element_text(size = 8), axis.title.x = element_text(size=9, margin = margin(t = 10)), axis.title.y = element_text(size = 10), legend.position = "none") +
+    coord_cartesian(ylim = c(-0.02, 1.02), xlim = c(0, 53400000), expand = F) +
+    labs(y = 'BAF', x = '') +
+    scale_x_continuous(name = 'Position on short arm of chromosome 11 position (Mb)', breaks = c(20000000, 40000000), labels = c(20, 40)) + 
+  scale_y_continuous(breaks = c(0, 0.5, 1), labels = c(0, 0.5, 1)) +
+  scale_color_manual(values = c('black', 'grey'))
+dev.off()
+
+```
+
+```{r}
+#2nd set: PD42154b3 PD42153b PD42151b
+
+#PD42154b3 - placental biopsy
+#PD42153b - umbilical cord
+#PD42151b - maternal samples
+
+library(dplyr)
+setwd('/lustre/scratch119/casm/team274sb/to3/placenta/baf_plotting/alleleCounter_files')
+
+#read in mother's SNP calls
+mother <- read.table('PD42151b.txt', comment.char = '', header = T, stringsAsFactors = F)
+
+#subset to only include 11p
+mother = mother[mother$POS < 53400000, ]
+
+#Filter mother's SNPs to leave probable homozygous SNPs
+mother_good_depth = mother[mother$Good_depth >= 10,] #minimum depth to call state of SNP
+mother_2state = mother_good_depth[rowSums(mother_good_depth[, c(3:6)] > 0) <= 2, ] #removes some with aberrant 3rd alleles
+mother_homo = mother_2state[mother_2state$Count_A/mother_2state$Good_depth > 0.9 | mother_2state$Count_C/mother_2state$Good_depth > 0.9 | mother_2state$Count_G/mother_2state$Good_depth > 0.9 | mother_2state$Count_T/mother_2state$Good_depth > 0.9, ] #filtered to leave probable homozygous SNPs only
+
+#read in child's umbilical cord SNPs
+child <- read.table('PD42153b.txt', comment.char = '', header = T, stringsAsFactors = F)
+child = child[child$POS < 53400000, ]
+
+#Identify SNPs that were homozygous in mother than are now likely to be heterozygous
+child_m_homo = merge(child, mother_homo[, c(1:2)]) #671219 SNPs
+child_good_depth = child_m_homo[child_m_homo$Good_depth >= 10,] #minimum depth to call state of SNP
+child_2state = child_good_depth[rowSums(child_good_depth[, c(3:6)] > 0) == 2, ] #removes definite homozygous SNPs and some with aberrant 3rd alleles
+child_hetero = child_2state[child_2state$Count_A/child_2state$Good_depth < 0.8 & child_2state$Count_C/child_2state$Good_depth < 0.8 & child_2state$Count_G/child_2state$Good_depth < 0.8 & child_2state$Count_T/child_2state$Good_depth < 0.8, ] #further filtered list of probably heterozygous SNPs, leaving 51234 potentially informative SNPs
+
+#make list of the homozygous SNPs in the mother that become heterozygous in the child
+mother_final = merge(mother_homo, child_hetero[, c(1:2)])
+sum(child_hetero$POS != mother_final$POS) #match order perfectly
+
+#annotate which allele belongs to mother and, by exclusion, father in the child
+child_hetero$mother_allele = NA
+child_hetero$father_allele = NA
+for(i in 1:nrow(child_hetero)){
+  child_hetero$mother_allele[i] = substr(colnames(sort(mother_final[mother_final$POS == child_hetero$POS[i], c(3:6)])[4]), 7, 7)
+  child_hetero$father_allele[i] = substr(colnames(sort(child_hetero[i, c(3:6)])[3:4])[!grepl(paste0("Count_", child_hetero$mother_allele[i]), colnames(sort(child_hetero[i, c(3:6)])[3:4]))], 7, 7)
+}
+
+child_hetero[rowSums(is.na(child_hetero[, c(3:6)])) > 0,] #no NAs left
+
+#read in trophoblast cluster sample with CN neutral LOH identified on ASCAT
+placenta <- read.table('PD42154b3.txt', comment.char = '', header = T, stringsAsFactors = F)
+placenta = placenta[placenta$POS < 53400000, ]
+placenta_hetero = merge(placenta, child_hetero[, c(1,2)]) #18680
+sum(child_hetero$POS != placenta_hetero$POS) #perfect alignment of order
+
+#knowing which allele belongs to which parent at the heterozygous sites, the counts of each can now be assigned within the sample of interest
+placenta_hetero$maternal_count = NA
+placenta_hetero$paternal_count = NA
+for(i in 1:nrow(placenta_hetero)){
+  placenta_hetero$maternal_count[i] = placenta_hetero[i, paste0('Count_', child_hetero$mother_allele[i])]
+  placenta_hetero$paternal_count[i] = placenta_hetero[i, paste0('Count_', child_hetero$father_allele[i])]
+}
+
+placenta_hetero$maternal_VAF = placenta_hetero$maternal_count / placenta_hetero$Good_depth
+placenta_hetero$paternal_VAF = placenta_hetero$paternal_count / placenta_hetero$Good_depth
+
+placenta_hetero.m = reshape2::melt(placenta_hetero[, c('X.CHR', 'POS', 'maternal_VAF', 'paternal_VAF')], id.vars = c('X.CHR', 'POS'))
+placenta_hetero.m$variable = as.factor(placenta_hetero.m$variable)
+
+pdf('/lustre/scratch119/casm/team274sb/to3/placenta/final_files/PD42154b3_chr11p_BAF_mk1_20200719.pdf', width = 3, height = 1.5, useDingbats = F)
+ggplot(placenta_hetero.m) +
+  geom_point(aes(x = POS, y = value, colour = variable), size = 0.03, pch = '.', alpha = 0.5) +
+  theme_bw() +
+    geom_hline(yintercept = 1.02, size = 1) +
+    theme(axis.title.y.right = element_blank(),                
+          axis.text.y.right = element_blank(),                 
+          axis.ticks.y.right = element_blank(),                      
+          strip.background = element_blank(),         
+          panel.grid = element_blank(), axis.line = element_line(colour = 'black'), axis.text = element_text(size = 8), axis.title.x = element_text(size=9, margin = margin(t = 10)), axis.title.y = element_text(size = 10), legend.position = "none") +
+    coord_cartesian(ylim = c(-0.02, 1.02), xlim = c(0, 53400000), expand = F) +
+    labs(y = 'BAF', x = '') +
+    scale_x_continuous(name = 'Position on short arm of chromosome 11 position (Mb)', breaks = c(20000000, 40000000), labels = c(20, 40)) + 
+  scale_y_continuous(breaks = c(0, 0.5, 1), labels = c(0, 0.5, 1)) +
+  scale_color_manual(values = c('black', 'grey'))
+dev.off()
+
+png('/lustre/scratch119/casm/team274sb/to3/placenta/final_files/PD42154b3_chr11p_BAF_mk1_20200722_datapointsonly.png', width = 4, height = 2, res = 720, units = 'in')
+ggplot(placenta_hetero.m) +
+  geom_point(aes(x = POS, y = value, colour = variable), size = 0.03, pch = '.', alpha = 0.5) +
+  theme_bw() +
+    theme(axis.line.x = element_blank(),
+          axis.line.y = element_blank(),
+          panel.border = element_blank(),
+      axis.title.y.right = element_blank(),                
+          axis.text.y.right = element_blank(),                 
+          axis.ticks = element_blank(),                      
+          strip.background = element_blank(),         
+          panel.grid = element_blank(), axis.text = element_blank(), axis.title = element_blank(), legend.position = "none") +
+    coord_cartesian(ylim = c(-0.02, 1.02), xlim = c(0, 53400000), expand = F) +
+    labs(y = 'BAF', x = '') +
+    scale_x_continuous(name = 'Position on short arm of chromosome 11 position (Mb)', breaks = c(20000000, 40000000), labels = c(20, 40)) + 
+  scale_y_continuous(breaks = c(0, 0.5, 1), labels = c(0, 0.5, 1)) +
+  scale_color_manual(values = c('black', 'grey'))
+dev.off()
+
+pdf('/lustre/scratch119/casm/team274sb/to3/placenta/final_files/PD42154b3_chr11p_BAF_mk1_20200722_axesonly.pdf', width = 3, height = 1.5, useDingbats = F)
+ggplot(placenta_hetero.m) +
+  geom_blank(aes(x = POS, y = value, colour = variable)) +
+  theme_bw() +
+    geom_hline(yintercept = 1.02, size = 1) +
+    theme(axis.title.y.right = element_blank(),                
+          axis.text.y.right = element_blank(),                 
+          axis.ticks.y.right = element_blank(),                      
+          strip.background = element_blank(),         
+          panel.grid = element_blank(), axis.line = element_line(colour = 'black'), axis.text = element_text(size = 8), axis.title.x = element_text(size=9, margin = margin(t = 10)), axis.title.y = element_text(size = 10), legend.position = "none") +
+    coord_cartesian(ylim = c(-0.02, 1.02), xlim = c(0, 53400000), expand = F) +
+    labs(y = 'BAF', x = '') +
+    scale_x_continuous(name = 'Position on short arm of chromosome 11 position (Mb)', breaks = c(20000000, 40000000), labels = c(20, 40)) + 
+  scale_y_continuous(breaks = c(0, 0.5, 1), labels = c(0, 0.5, 1)) +
+  scale_color_manual(values = c('black', 'grey'))
+dev.off()
