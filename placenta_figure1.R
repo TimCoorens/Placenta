@@ -5,6 +5,7 @@ library(reshape2)
 manifest=read.csv("Extended_data_table2.csv") #Read in Extended data table 2
 
 #Figure 1b
+#to3
 
 bulk_mb = manifest[manifest$Histo_desc == 'Bulk' & manifest$Patient != 'PD45581',] #remove trisomic rescue sample
 bulk_mb$status = ifelse(bulk_mb$Clinical_group == 8, 'Healthy', 'Abnormal') #divide by whether or not the placenta was classified as healthy
@@ -27,6 +28,7 @@ ggplot(data = bulk_mb) +
   labs(x = "Bulk samples", y = 'Substitution burden (adjusted)') + scale_y_continuous(breaks = c(0, 100, 200, 300), labels = c(0, 100, 200, 300), expand = expansion(add = c(5, 0))) 
 
 #Figure 1c
+#to3
 
 bulk_mb = manifest[manifest$Histo_desc == 'Bulk' & manifest$Patient != 'PD45581',] #remove trisomic rescue sample
 bulk_mb$status = ifelse(bulk_mb$Clinical_group == 8, 'Healthy', 'Abnormal')
@@ -49,6 +51,7 @@ ggplot(data = bulk_mb) +
   labs(x = "Bulk samples", y = 'Median substitution VAF') + scale_y_continuous(breaks = c(0, 0.1, 0.2, 0.3, 0.4, 0.5), labels = c(0, 0.1, 0.2, 0.3, 0.4, 0.5), expand = expansion(add = c(0.05, 0))) 
 
 #Figure 1d
+#to3
 
 library(reshape2)
 library(ggplot2)
@@ -95,6 +98,7 @@ ggplot(dfm.bulk, aes(x = Sample, y = value)) +
   guides(fill = guide_legend(override.aes = list(colour = "black")))
 
 #Figure 1e
+#to3
 
 #Data from Lee-Six et al, Nature, 2019
 intestine_wgs <- read.table('/lustre/scratch119/casm/team274sb/to3/placenta/reference_datasets/lee_six_intestine_sigs.txt', header = T, sep = '\t', stringsAsFactors = F)
